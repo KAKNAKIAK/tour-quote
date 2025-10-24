@@ -452,12 +452,12 @@ const ManageProducts: React.FC = () => {
                 </Select>
                 {pricingType === 'PerPerson' ? (
                     <div className="grid grid-cols-3 gap-4">
-                        <Input label="가격 (성인)" id="price-adult" type="number" value={priceAdult} onChange={e => setPriceAdult(parseFloat(e.target.value) || 0)} />
-                        <Input label="가격 (아동)" id="price-child" type="number" value={priceChild} onChange={e => setPriceChild(parseFloat(e.target.value) || 0)} />
-                        <Input label="가격 (유아)" id="price-infant" type="number" value={priceInfant} onChange={e => setPriceInfant(parseFloat(e.target.value) || 0)} />
+                        <Input label="가격 (성인, ₩)" id="price-adult" type="number" value={priceAdult} onChange={e => setPriceAdult(parseFloat(e.target.value) || 0)} />
+                        <Input label="가격 (아동, ₩)" id="price-child" type="number" value={priceChild} onChange={e => setPriceChild(parseFloat(e.target.value) || 0)} />
+                        <Input label="가격 (유아, ₩)" id="price-infant" type="number" value={priceInfant} onChange={e => setPriceInfant(parseFloat(e.target.value) || 0)} />
                     </div>
                 ) : (
-                    <Input label="가격 (단위)" id="price-unit" type="number" value={priceUnit} onChange={e => setPriceUnit(parseFloat(e.target.value) || 0)} />
+                    <Input label="가격 (단위, ₩)" id="price-unit" type="number" value={priceUnit} onChange={e => setPriceUnit(parseFloat(e.target.value) || 0)} />
                 )}
 
                 {submitError && <p className="text-red-500 text-sm">{submitError}</p>}

@@ -1,5 +1,9 @@
 import { Quote, QuoteDay, QuoteItem } from '../types';
 
+const formatCurrency = (amount: number): string => {
+    return `₩${Math.round(amount).toLocaleString('ko-KR')}`;
+}
+
 export const generateTextQuote = (quote: Quote): string => {
   let text = `견적서: ${quote.info.customerName || '해당 없음'}\n`;
   text += `인원: 성인 ${quote.info.pax.adults}, 아동 ${quote.info.pax.children}, 유아 ${quote.info.pax.infants}\n`;
@@ -10,15 +14,15 @@ export const generateTextQuote = (quote: Quote): string => {
     day.items.forEach((item) => {
       text += `- ${item.product.ProductName}`;
       if (item.product.PricingType === 'PerUnit') {
-        text += ` (수량 ${item.quantity} x 단가 $${item.appliedPrice.toFixed(2)})`;
+        text += ` (수량 ${item.quantity} x 단가 ${formatCurrency(item.appliedPrice)})`;
       }
-      text += `: $${item.total.toFixed(2)}\n`;
+      text += `: ${formatCurrency(item.total)}\n`;
     });
-    text += `${index + 1}일차 합계: $${day.dayTotal.toFixed(2)}\n\n`;
+    text += `${index + 1}일차 합계: ${formatCurrency(day.dayTotal)}\n\n`;
   });
 
   text += '--------------------------------------------------\n';
-  text += `총 합계: $${quote.grandTotal.toFixed(2)}\n`;
+  text += `총 합계: ${formatCurrency(quote.grandTotal)}\n`;
 
   return text;
 };
@@ -49,8 +53,8 @@ export const exportCsvQuote = (quote: Quote): void => {
         quote.info.pax.children,
         quote.info.pax.infants,
         item.product.PricingType === 'PerUnit' ? item.quantity : '해당 없음',
-        item.product.PricingType === 'PerUnit' ? item.appliedPrice.toFixed(2) : '해당 없음',
-        item.total.toFixed(2),
+        item.product.PricingType === 'PerUnit' ? Math.round(item.appliedPrice) : '해당 없음',
+        Math.round(item.total),
       ]);
     });
   });

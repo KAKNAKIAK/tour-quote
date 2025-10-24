@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { db } from '../firebase';
-import { collection, query, where, doc, getDoc, getDocs } from 'firebase/firestore';
+import { collection, query, where, doc, getDocs } from 'firebase/firestore';
 import { useFirestoreCollection } from '../hooks/useFirestoreCollection';
 import { Country, City, Category, Product, Quote, QuoteDay, QuoteItem, QuoteInfo } from '../types';
 import Button from '../components/ui/Button';
@@ -8,6 +8,10 @@ import Input from '../components/ui/Input';
 import Select from '../components/ui/Select';
 import Modal from '../components/ui/Modal';
 import { generateTextQuote, exportCsvQuote } from '../services/exportService';
+
+const formatCurrency = (amount: number): string => {
+    return `₩${Math.round(amount).toLocaleString('ko-KR')}`;
+}
 
 const QuotePage: React.FC = () => {
     const { data: countries } = useFirestoreCollection<Country>('Countries');
@@ -26,6 +30,11 @@ const QuotePage: React.FC = () => {
     const [isProductModalOpen, setIsProductModalOpen] = useState(false);
     const [activeDayId, setActiveDayId] = useState<string | null>(null);
     
+    // State for modal data, moved from modal component to here for better control
+    const [modalProducts, setModalProducts] = useState<Record<string, Product[]>>({});
+    const [isModalLoading, setIsModalLoading] = useState(false);
+    const [modalError, setModalError] = useState<string | null>(null);
+
     const availableCities = useMemo(() => {
         if (!quoteInfo.countryId) return [];
         return allCities.filter(city => city.CountryRef.id === quoteInfo.countryId);
@@ -80,9 +89,55 @@ const QuotePage: React.FC = () => {
     const addDay = () => setDays([...days, { id: crypto.randomUUID(), items: [], dayTotal: 0 }]);
     const removeDay = (id: string) => setDays(days.filter(d => d.id !== id));
 
-    const openProductSelector = (dayId: string) => {
+    const openProductSelector = async (dayId: string) => {
+        if (!quoteInfo.cityId) return;
+
         setActiveDayId(dayId);
         setIsProductModalOpen(true);
+        setIsModalLoading(true);
+        setModalError(null);
+        setModalProducts({}); // Clear previous results immediately
+
+        try {
+            const cityRef = doc(db, 'Cities', quoteInfo.cityId);
+            const productsQuery = query(collection(db, 'Products'), where('CityRef', '==', cityRef));
+            const productsPromise = getDocs(productsQuery);
+            const categoriesPromise = getDocs(collection(db, 'Categories'));
+
+            const [productSnapshot, categorySnapshot] = await Promise.all([productsPromise, categoriesPromise]);
+
+            const categoryMap = new Map<string, string>();
+            categorySnapshot.forEach(doc => {
+                categoryMap.set(doc.id, doc.data().CategoryName);
+            });
+
+            const enrichedProducts: Product[] = productSnapshot.docs.map(doc => {
+                const productData = doc.data() as Omit<Product, 'id'>;
+                const categoryId = (productData.CategoryRef as any)?.id;
+                return {
+                    id: doc.id,
+                    ...productData,
+                    CategoryName: categoryMap.get(categoryId) || '미분류'
+                };
+            });
+            
+            const grouped = enrichedProducts.reduce<Record<string, Product[]>>((acc, product) => {
+                const categoryName = product.CategoryName || '미분류';
+                if (!acc[categoryName]) {
+                    acc[categoryName] = [];
+                }
+                acc[categoryName].push(product);
+                return acc;
+            }, {});
+
+            setModalProducts(grouped);
+
+        } catch (err) {
+            console.error("Failed to fetch products or categories:", err);
+            setModalError("상품 정보를 불러오는 데 실패했습니다.");
+        } finally {
+            setIsModalLoading(false);
+        }
     };
     
     const addProductToDay = (product: Product) => {
@@ -178,7 +233,7 @@ const QuotePage: React.FC = () => {
                                        </div>
                                     </>
                                    ) : <div className="col-span-8 md:col-span-4"></div>}
-                                   <div className="col-span-10 md:col-span-3 font-semibold text-right">${item.total.toFixed(2)}</div>
+                                   <div className="col-span-10 md:col-span-3 font-semibold text-right">{formatCurrency(item.total)}</div>
                                    <div className="col-span-2 md:col-span-1 text-right">
                                      <button onClick={() => removeQuoteItem(day.id, item.id)} className="text-red-500 hover:text-red-700">
                                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
@@ -187,7 +242,7 @@ const QuotePage: React.FC = () => {
                                </div>
                            ))}
                         </div>
-                        <div className="text-right font-bold mt-3">일차 합계: ${day.dayTotal.toFixed(2)}</div>
+                        <div className="text-right font-bold mt-3">일차 합계: {formatCurrency(day.dayTotal)}</div>
                         <Button size="sm" variant="secondary" onClick={() => openProductSelector(day.id)} className="mt-4" disabled={!quoteInfo.cityId}>
                            + 상품 추가
                         </Button>
@@ -202,7 +257,7 @@ const QuotePage: React.FC = () => {
                 <div className="flex justify-between items-center">
                     <div>
                         <span className="text-xl font-bold">총 합계: </span>
-                        <span className="text-2xl font-bold text-blue-600">${grandTotal.toFixed(2)}</span>
+                        <span className="text-2xl font-bold text-blue-600">{formatCurrency(grandTotal)}</span>
                     </div>
                     <div className="flex gap-2">
                         <Button onClick={() => navigator.clipboard.writeText(generateTextQuote(fullQuote))}>텍스트 복사</Button>
@@ -216,8 +271,10 @@ const QuotePage: React.FC = () => {
             <ProductSelectorModal
                 isOpen={isProductModalOpen}
                 onClose={() => setIsProductModalOpen(false)}
-                cityId={quoteInfo.cityId}
                 onAddProduct={addProductToDay}
+                productsByCategory={modalProducts}
+                isLoading={isModalLoading}
+                error={modalError}
             />
         )}
       </div>
@@ -227,71 +284,45 @@ const QuotePage: React.FC = () => {
 interface ProductSelectorModalProps {
     isOpen: boolean;
     onClose: () => void;
-    cityId: string;
     onAddProduct: (product: Product) => void;
+    productsByCategory: Record<string, Product[]>;
+    isLoading: boolean;
+    error: string | null;
 }
 
-const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onClose, cityId, onAddProduct }) => {
-    const { data: categories } = useFirestoreCollection<Category>('Categories');
-    const [products, setProducts] = useState<Product[]>([]);
-    const [loading, setLoading] = useState(false);
-
-    useEffect(() => {
-        const fetchProducts = async () => {
-            if (!cityId || !isOpen) return;
-            setLoading(true);
-            const cityRef = doc(db, 'Cities', cityId);
-            const productsQuery = query(collection(db, 'Products'), where('CityRef', '==', cityRef));
-            const productSnapshot = await getDocs(productsQuery);
-            const fetchedProducts: Product[] = [];
-
-            // To enrich with Category Name
-            for (const doc of productSnapshot.docs) {
-                const productData = { id: doc.id, ...doc.data() } as Product;
-                const catDoc = await getDoc(productData.CategoryRef);
-                if (catDoc.exists()) {
-                    productData.CategoryName = (catDoc.data() as Category).CategoryName;
-                }
-                fetchedProducts.push(productData);
-            }
-
-            setProducts(fetchedProducts);
-            setLoading(false);
-        };
-        fetchProducts();
-    }, [cityId, isOpen]);
-
-    const productsByCategory = useMemo(() => {
-        return products.reduce((acc, product) => {
-            const categoryName = product.CategoryName || '미분류';
-            if (!acc[categoryName]) {
-                acc[categoryName] = [];
-            }
-            acc[categoryName].push(product);
-            return acc;
-        }, {} as Record<string, Product[]>);
-    }, [products]);
-
+const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onClose, onAddProduct, productsByCategory, isLoading, error }) => {
+    
     const sortedCategories = useMemo(() => {
-        return categories.filter(c => productsByCategory[c.CategoryName]).sort((a, b) => a.CategoryName.localeCompare(b.CategoryName));
-    }, [categories, productsByCategory]);
+        return Object.keys(productsByCategory)
+            .filter(name => name !== '미분류')
+            .sort((a, b) => a.localeCompare(b));
+    }, [productsByCategory]);
+
+    const uncategorizedProducts = productsByCategory['미분류'] || [];
+    const hasProducts = !isLoading && Object.keys(productsByCategory).length > 0;
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} title="상품 선택">
-            {loading ? <p>상품 로딩 중...</p> : (
+            {isLoading ? (
+                <p className="text-center text-gray-500">상품 로딩 중...</p>
+            ) : error ? (
+                <p className="text-center text-red-500">{error}</p>
+            ) : !hasProducts ? (
+                <p className="text-center text-gray-500">선택하신 도시에 등록된 상품이 없습니다.</p>
+            ) : (
                 <div className="space-y-4">
-                    {sortedCategories.map(category => (
-                        <div key={category.id}>
-                            <h4 className="font-bold text-lg text-gray-700 mb-2">{category.CategoryName}</h4>
+                    {sortedCategories.map(categoryName => (
+                        <div key={categoryName}>
+                            <h4 className="font-bold text-lg text-gray-700 mb-2">{categoryName}</h4>
                             <ul className="space-y-2">
-                                {productsByCategory[category.CategoryName].map(product => (
+                                {productsByCategory[categoryName].map(product => (
                                     <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
                                         <div>
                                             <p className="font-medium">{product.ProductName}</p>
                                             <p className="text-sm text-gray-500">
                                                 {product.PricingType === 'PerPerson'
-                                                    ? `성인: $${product.Price_Adult || 0} / 아동: $${product.Price_Child || 0} / 유아: $${product.Price_Infant || 0}`
-                                                    : `단위당 가격: $${product.Price_Unit || 0}`
+                                                    ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
+                                                    : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
                                                 }
                                             </p>
                                         </div>
@@ -301,6 +332,27 @@ const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onC
                             </ul>
                         </div>
                     ))}
+                    {uncategorizedProducts.length > 0 && (
+                         <div>
+                            <h4 className="font-bold text-lg text-gray-700 mb-2">미분류</h4>
+                            <ul className="space-y-2">
+                                {uncategorizedProducts.map(product => (
+                                    <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
+                                        <div>
+                                            <p className="font-medium">{product.ProductName}</p>
+                                            <p className="text-sm text-gray-500">
+                                                {product.PricingType === 'PerPerson'
+                                                    ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
+                                                    : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
+                                                }
+                                            </p>
+                                        </div>
+                                        <Button size="sm" onClick={() => onAddProduct(product)}>추가</Button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
                 </div>
             )}
         </Modal>
