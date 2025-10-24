@@ -10,6 +10,10 @@ import Modal from '../components/ui/Modal';
 
 type CollectionType = 'Products' | 'Categories' | 'Cities' | 'Countries';
 
+const formatCurrency = (amount: number): string => {
+    return `₩${Math.round(amount).toLocaleString('ko-KR')}`;
+}
+
 const AdminPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<CollectionType>('Products');
   
@@ -578,6 +582,7 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                             <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">도시</th>
                             <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">카테고리</th>
                             <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">가격 유형</th>
+                            <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">가격</th>
                             <th scope="col" className="relative py-3.5 pl-3 pr-4 sm:pr-0"><span className="sr-only">수정</span></th>
                         </tr>
                         </thead>
@@ -590,6 +595,17 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.cityName}</td>
                                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.categoryName}</td>
                                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{p.PricingType === 'PerPerson' ? '인당' : '단위당'}</td>
+                                    <td className="px-3 py-4 text-sm text-gray-500">
+                                        { p.PricingType === 'PerPerson' ? (
+                                            <div className="text-xs">
+                                                <div>{`성인: ${formatCurrency(p.Price_Adult || 0)}`}</div>
+                                                <div>{`아동: ${formatCurrency(p.Price_Child || 0)}`}</div>
+                                                <div>{`유아: ${formatCurrency(p.Price_Infant || 0)}`}</div>
+                                            </div>
+                                        ) : (
+                                            formatCurrency(p.Price_Unit || 0)
+                                        )}
+                                    </td>
                                     <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-0">
                                         <div className="space-x-2">
                                             <Button size="sm" variant="secondary" onClick={() => openEditModal(p)} disabled={deletingId !== null}>수정</Button>
