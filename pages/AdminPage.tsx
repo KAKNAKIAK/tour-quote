@@ -438,6 +438,9 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
     const [submitError, setSubmitError] = useState<string | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
 
+    const [selectedCityId, setSelectedCityId] = useState<string>('');
+    const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
+
     const productDetailsMap = useMemo(() => {
         const details: Record<string, {cityName: string, categoryName: string}> = {};
         products.forEach(p => {
@@ -451,6 +454,12 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
         return details;
     }, [products, cities, categories]);
     
+    const filteredProducts = useMemo(() => {
+        return products
+            .filter(p => !selectedCityId || p.CityRef.id === selectedCityId)
+            .filter(p => !selectedCategoryId || p.CategoryRef.id === selectedCategoryId);
+    }, [products, selectedCityId, selectedCategoryId]);
+
     const resetForm = () => {
         setProductName('');
         setCityId('');
@@ -572,7 +581,18 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
             </form>
         </Modal>
 
-        <div className="mt-6 flow-root">
+        <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4 border-b pb-4 mb-4">
+            <Select label="도시 필터" id="city-filter" value={selectedCityId} onChange={e => setSelectedCityId(e.target.value)}>
+                <option value="">전체 도시</option>
+                {cities.sort((a,b) => a.CityName.localeCompare(b.CityName)).map(c => <option key={c.id} value={c.id}>{c.CityName}</option>)}
+            </Select>
+            <Select label="카테고리 필터" id="category-filter" value={selectedCategoryId} onChange={e => setSelectedCategoryId(e.target.value)}>
+                <option value="">전체 카테고리</option>
+                {categories.sort((a,b) => a.CategoryName.localeCompare(b.CategoryName)).map(c => <option key={c.id} value={c.id}>{c.CategoryName}</option>)}
+            </Select>
+        </div>
+
+        <div className="flow-root">
             <div className="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
                 <div className="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
                     <table className="min-w-full divide-y divide-gray-300">
@@ -587,7 +607,7 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                         </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200">
-                        {products.map(p => {
+                        {filteredProducts.map(p => {
                             const isCurrentDeleting = deletingId === p.id;
                             return (
                                 <tr key={p.id}>
