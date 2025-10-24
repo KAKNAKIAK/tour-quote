@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { db } from '../firebase';
-import { collection, doc, addDoc, updateDoc, deleteDoc, documentId, getDocs, query, where, writeBatch, getDoc } from 'firebase/firestore';
+import { collection, doc, addDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch } from 'firebase/firestore';
 import { useFirestoreCollection } from '../hooks/useFirestoreCollection';
 import { Country, City, Category, Product, PricingType } from '../types';
 import Button from '../components/ui/Button';
@@ -12,6 +12,11 @@ type CollectionType = 'Products' | 'Categories' | 'Cities' | 'Countries';
 
 const AdminPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<CollectionType>('Products');
+  
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deletePasswordError, setDeletePasswordError] = useState('');
+  const [onConfirmDelete, setOnConfirmDelete] = useState<(() => Promise<void>) | null>(null);
 
   const tabs: { key: CollectionType; name: string }[] = [
     { key: 'Products', name: '상품' },
@@ -19,6 +24,33 @@ const AdminPage: React.FC = () => {
     { key: 'Cities', name: '도시' },
     { key: 'Countries', name: '국가' },
   ];
+  
+  const requestDelete = (deleteFn: () => Promise<void>) => {
+    setDeletePassword('');
+    setDeletePasswordError('');
+    setOnConfirmDelete(() => deleteFn);
+    setIsDeleteModalOpen(true);
+  };
+
+  const handleCancelDelete = () => {
+    setIsDeleteModalOpen(false);
+    setOnConfirmDelete(null);
+  };
+
+  const handleConfirmDelete = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDeletePasswordError('');
+    if (deletePassword === '1234') {
+        if (onConfirmDelete) {
+            await onConfirmDelete();
+        }
+        handleCancelDelete();
+    } else {
+        setDeletePasswordError('비밀번호가 틀렸습니다.');
+        setDeletePassword('');
+    }
+  };
+
 
   const tabButtonClasses = (tabKey: CollectionType) =>
     `px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 ${
@@ -28,11 +60,12 @@ const AdminPage: React.FC = () => {
     }`;
 
   const renderContent = () => {
+    const props = { requestDelete };
     switch (activeTab) {
-      case 'Countries': return <ManageCountries />;
-      case 'Cities': return <ManageCities />;
-      case 'Categories': return <ManageCategories />;
-      case 'Products': return <ManageProducts />;
+      case 'Countries': return <ManageCountries {...props} />;
+      case 'Cities': return <ManageCities {...props} />;
+      case 'Categories': return <ManageCategories {...props} />;
+      case 'Products': return <ManageProducts {...props} />;
       default: return null;
     }
   };
@@ -52,17 +85,48 @@ const AdminPage: React.FC = () => {
       <div className="mt-6">
         {renderContent()}
       </div>
+
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={handleCancelDelete}
+        title="삭제 확인"
+      >
+        <form onSubmit={handleConfirmDelete} className="space-y-4">
+          <p>이 항목을 영구적으로 삭제하려면 관리자 비밀번호를 입력하세요.</p>
+          <Input
+            label="비밀번호"
+            id="delete-password"
+            type="password"
+            value={deletePassword}
+            onChange={(e) => setDeletePassword(e.target.value)}
+            autoFocus
+          />
+          {deletePasswordError && <p className="text-red-500 text-sm">{deletePasswordError}</p>}
+          <div className="flex justify-end gap-2 pt-4">
+            <Button type="button" variant="secondary" onClick={handleCancelDelete}>
+              취소
+            </Button>
+            <Button type="submit" variant="danger">
+              삭제 실행
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };
 
+interface ManageProps {
+    requestDelete: (deleteFn: () => Promise<void>) => void;
+}
 
 // Component to Manage Countries
-const ManageCountries: React.FC = () => {
+const ManageCountries: React.FC<ManageProps> = ({ requestDelete }) => {
   const { data: countries, loading } = useFirestoreCollection<Country>('Countries');
   const [name, setName] = useState('');
   const [editing, setEditing] = useState<Country | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [processingId, setProcessingId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -87,22 +151,27 @@ const ManageCountries: React.FC = () => {
     }
   };
   
-  const handleDelete = async (id: string) => {
-    if(window.confirm('정말로 삭제하시겠습니까? 연관된 도시와 상품들이 모두 삭제됩니다.')) {
-        setIsSubmitting(true);
+  const handleDelete = (id: string) => {
+    requestDelete(async () => {
+        setProcessingId(id);
         setSubmitError(null);
         try {
             const batch = writeBatch(db);
-            // Find cities associated with this country
             const citiesQuery = query(collection(db, "Cities"), where("CountryRef", "==", doc(db, 'Countries', id)));
             const citiesSnapshot = await getDocs(citiesQuery);
             const cityIds = citiesSnapshot.docs.map(d => d.id);
             
             if (cityIds.length > 0) {
-                // Find products associated with these cities
-                const productsQuery = query(collection(db, "Products"), where("CityRef", "in", cityIds.map(cityId => doc(db, 'Cities', cityId))));
-                const productsSnapshot = await getDocs(productsQuery);
-                productsSnapshot.forEach(productDoc => batch.delete(productDoc.ref));
+                const CHUNK_SIZE = 30;
+                for (let i = 0; i < cityIds.length; i += CHUNK_SIZE) {
+                    const chunk = cityIds.slice(i, i + CHUNK_SIZE);
+                    const productsQuery = query(
+                        collection(db, "Products"), 
+                        where("CityRef", "in", chunk.map(cityId => doc(db, 'Cities', cityId)))
+                    );
+                    const productsSnapshot = await getDocs(productsQuery);
+                    productsSnapshot.forEach(productDoc => batch.delete(productDoc.ref));
+                }
             }
 
             citiesSnapshot.forEach(cityDoc => batch.delete(cityDoc.ref));
@@ -110,32 +179,41 @@ const ManageCountries: React.FC = () => {
             await batch.commit();
         } catch (error) {
             console.error("Error deleting country:", error);
-            setSubmitError(`국가 삭제에 실패했습니다. (오류: ${(error as Error).message})`);
+            alert(`국가 삭제에 실패했습니다. (오류: ${(error as Error).message})`);
         } finally {
-            setIsSubmitting(false);
+            setProcessingId(null);
         }
-    }
+    });
   }
+
+  const isBusy = isSubmitting || processingId !== null;
 
   return (
     <div>
       <form onSubmit={handleSubmit} className="flex gap-4 mb-4">
         <Input label={editing ? '국가 수정' : '새 국가'} id="country" value={name} onChange={e => setName(e.target.value)} placeholder="예: 일본" />
         <div className="self-end flex gap-2">
-            <Button type="submit" disabled={isSubmitting}>{isSubmitting ? '저장 중...' : (editing ? '업데이트' : '추가')}</Button>
-            {editing && <Button variant="secondary" onClick={() => { setEditing(null); setName(''); }} disabled={isSubmitting}>취소</Button>}
+            <Button type="submit" disabled={isBusy}>{isSubmitting ? '저장 중...' : (editing ? '업데이트' : '추가')}</Button>
+            {editing && <Button variant="secondary" onClick={() => { setEditing(null); setName(''); }} disabled={isBusy}>취소</Button>}
         </div>
       </form>
       {submitError && <p className="text-red-500 my-2">{submitError}</p>}
       {loading ? <p>로딩 중...</p> : (
         <ul className="space-y-2">
-          {countries.map(c => <li key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-            {c.CountryName}
-            <div className="space-x-2">
-              <Button size="sm" variant="secondary" onClick={() => { setEditing(c); setName(c.CountryName); }} disabled={isSubmitting}>수정</Button>
-              <Button size="sm" variant="danger" onClick={() => handleDelete(c.id)} disabled={isSubmitting}>삭제</Button>
-            </div>
-          </li>)}
+          {countries.map(c => {
+            const isCurrentProcessing = processingId === c.id;
+            return (
+              <li key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                {c.CountryName}
+                <div className="space-x-2">
+                  <Button size="sm" variant="secondary" onClick={() => { setEditing(c); setName(c.CountryName); }} disabled={isBusy}>수정</Button>
+                  <Button size="sm" variant="danger" onClick={() => handleDelete(c.id)} disabled={isBusy}>
+                    {isCurrentProcessing ? '삭제 중...' : '삭제'}
+                  </Button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -144,13 +222,14 @@ const ManageCountries: React.FC = () => {
 
 
 // Component to Manage Cities
-const ManageCities: React.FC = () => {
+const ManageCities: React.FC<ManageProps> = ({ requestDelete }) => {
     const { data: cities } = useFirestoreCollection<City>('Cities');
     const { data: countries } = useFirestoreCollection<Country>('Countries');
     const [cityName, setCityName] = useState('');
     const [countryId, setCountryId] = useState('');
     const [editing, setEditing] = useState<City | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [processingId, setProcessingId] = useState<string | null>(null);
     const [submitError, setSubmitError] = useState<string | null>(null);
 
     const cityCountryMap = useMemo(() => {
@@ -195,9 +274,9 @@ const ManageCities: React.FC = () => {
         }
     };
 
-    const handleDelete = async (id: string) => {
-        if(window.confirm('정말로 삭제하시겠습니까? 연관된 상품들이 모두 삭제됩니다.')) {
-            setIsSubmitting(true);
+    const handleDelete = (id: string) => {
+        requestDelete(async () => {
+            setProcessingId(id);
             setSubmitError(null);
             try {
                 const batch = writeBatch(db);
@@ -208,12 +287,14 @@ const ManageCities: React.FC = () => {
                 await batch.commit();
             } catch (error) {
                 console.error("Error deleting city:", error);
-                setSubmitError(`도시 삭제에 실패했습니다. (오류: ${(error as Error).message})`);
+                alert(`도시 삭제에 실패했습니다. (오류: ${(error as Error).message})`);
             } finally {
-                setIsSubmitting(false);
+                setProcessingId(null);
             }
-        }
+        });
     }
+
+    const isBusy = isSubmitting || processingId !== null;
 
     return (
       <div>
@@ -224,30 +305,38 @@ const ManageCities: React.FC = () => {
                 {countries.map(c => <option key={c.id} value={c.id}>{c.CountryName}</option>)}
             </Select>
             <div className="flex gap-2">
-                <Button type="submit" disabled={isSubmitting}>{isSubmitting ? '저장 중...' : (editing ? '업데이트' : '추가')}</Button>
-                {editing && <Button variant="secondary" onClick={handleCancelEdit} disabled={isSubmitting}>취소</Button>}
+                <Button type="submit" disabled={isBusy}>{isSubmitting ? '저장 중...' : (editing ? '업데이트' : '추가')}</Button>
+                {editing && <Button variant="secondary" onClick={handleCancelEdit} disabled={isBusy}>취소</Button>}
             </div>
         </form>
         {submitError && <p className="text-red-500 my-2">{submitError}</p>}
         <ul className="space-y-2">
-            {cities.map(c => <li key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-                <span>{c.CityName} <span className="text-sm text-gray-500">({cityCountryMap[c.id]})</span></span>
-                <div className="space-x-2">
-                    <Button size="sm" variant="secondary" onClick={() => handleEdit(c)} disabled={isSubmitting}>수정</Button>
-                    <Button size="sm" variant="danger" onClick={() => handleDelete(c.id)} disabled={isSubmitting}>삭제</Button>
-                </div>
-            </li>)}
+            {cities.map(c => {
+                const isCurrentProcessing = processingId === c.id;
+                return (
+                    <li key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                        <span>{c.CityName} <span className="text-sm text-gray-500">({cityCountryMap[c.id]})</span></span>
+                        <div className="space-x-2">
+                            <Button size="sm" variant="secondary" onClick={() => handleEdit(c)} disabled={isBusy}>수정</Button>
+                            <Button size="sm" variant="danger" onClick={() => handleDelete(c.id)} disabled={isBusy}>
+                                {isCurrentProcessing ? '삭제 중...' : '삭제'}
+                            </Button>
+                        </div>
+                    </li>
+                );
+            })}
         </ul>
       </div>
     )
 }
 
 // Component to Manage Categories
-const ManageCategories: React.FC = () => {
+const ManageCategories: React.FC<ManageProps> = ({ requestDelete }) => {
     const { data: categories } = useFirestoreCollection<Category>('Categories');
     const [name, setName] = useState('');
     const [editing, setEditing] = useState<Category | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [processingId, setProcessingId] = useState<string | null>(null);
     const [submitError, setSubmitError] = useState<string | null>(null);
   
     const handleSubmit = async (e: React.FormEvent) => {
@@ -271,9 +360,9 @@ const ManageCategories: React.FC = () => {
         }
     };
 
-    const handleDelete = async (id: string) => {
-        if(window.confirm('정말로 삭제하시겠습니까? 연관된 상품들이 모두 삭제됩니다.')) {
-            setIsSubmitting(true);
+    const handleDelete = (id: string) => {
+        requestDelete(async () => {
+            setProcessingId(id);
             setSubmitError(null);
             try {
                 const batch = writeBatch(db);
@@ -284,38 +373,47 @@ const ManageCategories: React.FC = () => {
                 await batch.commit();
             } catch (error) {
                 console.error("Error deleting category:", error);
-                setSubmitError(`카테고리 삭제에 실패했습니다. (오류: ${(error as Error).message})`);
+                alert(`카테고리 삭제에 실패했습니다. (오류: ${(error as Error).message})`);
             } finally {
-                setIsSubmitting(false);
+                setProcessingId(null);
             }
-        }
+        });
     }
+
+    const isBusy = isSubmitting || processingId !== null;
   
     return (
       <div>
         <form onSubmit={handleSubmit} className="flex gap-4 mb-4">
           <Input label={editing ? '카테고리 수정' : '새 카테고리'} id="category" value={name} onChange={e => setName(e.target.value)} placeholder="예: 투어" />
           <div className="self-end flex gap-2">
-            <Button type="submit" disabled={isSubmitting}>{isSubmitting ? '저장 중...' : (editing ? '업데이트' : '추가')}</Button>
-            {editing && <Button variant="secondary" onClick={() => { setEditing(null); setName(''); }} disabled={isSubmitting}>취소</Button>}
+            <Button type="submit" disabled={isBusy}>{isSubmitting ? '저장 중...' : (editing ? '업데이트' : '추가')}</Button>
+            {editing && <Button variant="secondary" onClick={() => { setEditing(null); setName(''); }} disabled={isBusy}>취소</Button>}
           </div>
         </form>
         {submitError && <p className="text-red-500 my-2">{submitError}</p>}
         <ul className="space-y-2">
-          {categories.map(c => <li key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
-            {c.CategoryName}
-            <div className="space-x-2">
-              <Button size="sm" variant="secondary" onClick={() => { setEditing(c); setName(c.CategoryName); }} disabled={isSubmitting}>수정</Button>
-              <Button size="sm" variant="danger" onClick={() => handleDelete(c.id)} disabled={isSubmitting}>삭제</Button>
-            </div>
-          </li>)}
+          {categories.map(c => {
+            const isCurrentProcessing = processingId === c.id;
+            return (
+                <li key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                    {c.CategoryName}
+                    <div className="space-x-2">
+                    <Button size="sm" variant="secondary" onClick={() => { setEditing(c); setName(c.CategoryName); }} disabled={isBusy}>수정</Button>
+                    <Button size="sm" variant="danger" onClick={() => handleDelete(c.id)} disabled={isBusy}>
+                        {isCurrentProcessing ? '삭제 중...' : '삭제'}
+                    </Button>
+                    </div>
+                </li>
+            );
+          })}
         </ul>
       </div>
     );
 };
 
 // Component to Manage Products
-const ManageProducts: React.FC = () => {
+const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
     const { data: products } = useFirestoreCollection<Product>('Products');
     const { data: cities } = useFirestoreCollection<City>('Cities');
     const { data: categories } = useFirestoreCollection<Category>('Categories');
@@ -334,6 +432,7 @@ const ManageProducts: React.FC = () => {
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
 
     const productDetailsMap = useMemo(() => {
         const details: Record<string, {cityName: string, categoryName: string}> = {};
@@ -416,23 +515,23 @@ const ManageProducts: React.FC = () => {
         }
     };
 
-    const handleDelete = async (id: string) => {
-        if(window.confirm('정말로 이 상품을 삭제하시겠습니까?')) {
-            // Note: This is a simplified delete, you might want loading/error state here too
-            // For simplicity, we'll keep it as is, but for a real app, add submitting state.
+    const handleDelete = (id: string) => {
+        requestDelete(async () => {
+            setDeletingId(id);
             try {
                 await deleteDoc(doc(db, 'Products', id));
             } catch (error) {
                 console.error("Error deleting product:", error);
-                // In a real app, you'd show this error to the user
                 alert(`상품 삭제 실패: ${(error as Error).message}`);
+            } finally {
+                setDeletingId(null);
             }
-        }
+        });
     }
 
     return (
       <div>
-        <Button onClick={openAddModal}>새 상품 추가</Button>
+        <Button onClick={openAddModal} disabled={deletingId !== null}>새 상품 추가</Button>
         <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingProduct ? '상품 수정' : '상품 추가'}>
             <form onSubmit={handleSubmit} className="space-y-4">
                 <Input label="상품명" id="product-name" value={productName} onChange={e => setProductName(e.target.value)} required />
@@ -483,20 +582,25 @@ const ManageProducts: React.FC = () => {
                         </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200">
-                        {products.map(p => (
-                            <tr key={p.id}>
-                                <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">{p.ProductName}</td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.cityName}</td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.categoryName}</td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{p.PricingType === 'PerPerson' ? '인당' : '단위당'}</td>
-                                <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-0">
-                                    <div className="space-x-2">
-                                        <Button size="sm" variant="secondary" onClick={() => openEditModal(p)}>수정</Button>
-                                        <Button size="sm" variant="danger" onClick={() => handleDelete(p.id)}>삭제</Button>
-                                    </div>
-                                </td>
-                            </tr>
-                        ))}
+                        {products.map(p => {
+                            const isCurrentDeleting = deletingId === p.id;
+                            return (
+                                <tr key={p.id}>
+                                    <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">{p.ProductName}</td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.cityName}</td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.categoryName}</td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{p.PricingType === 'PerPerson' ? '인당' : '단위당'}</td>
+                                    <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-0">
+                                        <div className="space-x-2">
+                                            <Button size="sm" variant="secondary" onClick={() => openEditModal(p)} disabled={deletingId !== null}>수정</Button>
+                                            <Button size="sm" variant="danger" onClick={() => handleDelete(p.id)} disabled={deletingId !== null}>
+                                                {isCurrentDeleting ? '삭제 중...' : '삭제'}
+                                            </Button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            );
+                        })}
                         </tbody>
                     </table>
                 </div>

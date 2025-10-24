@@ -13,6 +13,31 @@ const formatCurrency = (amount: number): string => {
     return `₩${Math.round(amount).toLocaleString('ko-KR')}`;
 }
 
+// 순수 계산 함수: 현재의 days 배열과 pax 정보를 받아 모든 합계를 다시 계산한 새로운 quote 객체를 반환합니다.
+const recalculateQuote = (currentDays: QuoteDay[], pax: QuoteInfo['pax']): { newDays: QuoteDay[], newGrandTotal: number } => {
+    let grandTotal = 0;
+    const newDays = currentDays.map(day => {
+        let dayTotal = 0;
+        const newItems = day.items.map(item => {
+            let total = 0;
+            if (item.product.PricingType === 'PerPerson') {
+                const adultPrice = item.product.Price_Adult || 0;
+                const childPrice = item.product.Price_Child || 0;
+                const infantPrice = item.product.Price_Infant || 0;
+                total = (pax.adults * adultPrice) + (pax.children * childPrice) + (pax.infants * infantPrice);
+            } else { // PerUnit
+                total = item.quantity * item.appliedPrice;
+            }
+            dayTotal += total;
+            return { ...item, total };
+        });
+        grandTotal += dayTotal;
+        return { ...day, items: newItems, dayTotal };
+    });
+    return { newDays, newGrandTotal: grandTotal };
+};
+
+
 const QuotePage: React.FC = () => {
     const { data: countries } = useFirestoreCollection<Country>('Countries');
     const { data: allCities } = useFirestoreCollection<City>('Cities');
@@ -30,7 +55,6 @@ const QuotePage: React.FC = () => {
     const [isProductModalOpen, setIsProductModalOpen] = useState(false);
     const [activeDayId, setActiveDayId] = useState<string | null>(null);
     
-    // State for modal data, moved from modal component to here for better control
     const [modalProducts, setModalProducts] = useState<Record<string, Product[]>>({});
     const [isModalLoading, setIsModalLoading] = useState(false);
     const [modalError, setModalError] = useState<string | null>(null);
@@ -42,7 +66,15 @@ const QuotePage: React.FC = () => {
 
     const handleInfoChange = (field: keyof QuoteInfo, value: any) => {
         if (field === 'pax') {
-            setQuoteInfo(prev => ({ ...prev, pax: { ...prev.pax, ...value }}));
+            const newPax = { ...quoteInfo.pax, ...value };
+            setQuoteInfo(prev => ({ ...prev, pax: newPax }));
+            
+            // 인원수 변경 시, 최신 days 상태를 기반으로 즉시 재계산
+            setDays(currentDays => {
+                const { newDays, newGrandTotal } = recalculateQuote(currentDays, newPax);
+                setGrandTotal(newGrandTotal);
+                return newDays;
+            });
         } else {
             setQuoteInfo(prev => ({ ...prev, [field]: value }));
         }
@@ -55,39 +87,16 @@ const QuotePage: React.FC = () => {
     }, [quoteInfo.countryId, quoteInfo.cityId, availableCities]);
 
 
-    const calculateTotals = useCallback(() => {
-        let newGrandTotal = 0;
-        const updatedDays = days.map(day => {
-            let newDayTotal = 0;
-            const updatedItems = day.items.map(item => {
-                let itemTotal = 0;
-                if (item.product.PricingType === 'PerPerson') {
-                    const adultPrice = item.product.Price_Adult || 0;
-                    const childPrice = item.product.Price_Child || 0;
-                    const infantPrice = item.product.Price_Infant || 0;
-                    itemTotal = (quoteInfo.pax.adults * adultPrice) + (quoteInfo.pax.children * childPrice) + (quoteInfo.pax.infants * infantPrice);
-                } else { // PerUnit
-                    itemTotal = item.quantity * item.appliedPrice;
-                }
-                item.total = itemTotal;
-                newDayTotal += itemTotal;
-                return item;
-            });
-            day.items = updatedItems;
-            day.dayTotal = newDayTotal;
-            newGrandTotal += newDayTotal;
-            return day;
-        });
-        setDays(updatedDays);
-        setGrandTotal(newGrandTotal);
-    }, [days, quoteInfo.pax]);
-
-    useEffect(() => {
-        calculateTotals();
-    }, [quoteInfo.pax, calculateTotals]);
-    
     const addDay = () => setDays([...days, { id: crypto.randomUUID(), items: [], dayTotal: 0 }]);
-    const removeDay = (id: string) => setDays(days.filter(d => d.id !== id));
+    
+    const removeDay = (id: string) => {
+        setDays(currentDays => {
+            const intermediateDays = currentDays.filter(d => d.id !== id);
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            setGrandTotal(newGrandTotal);
+            return newDays;
+        });
+    };
 
     const openProductSelector = async (dayId: string) => {
         if (!quoteInfo.cityId) return;
@@ -96,7 +105,7 @@ const QuotePage: React.FC = () => {
         setIsProductModalOpen(true);
         setIsModalLoading(true);
         setModalError(null);
-        setModalProducts({}); // Clear previous results immediately
+        setModalProducts({});
 
         try {
             const cityRef = doc(db, 'Cities', quoteInfo.cityId);
@@ -121,14 +130,16 @@ const QuotePage: React.FC = () => {
                 };
             });
             
-            const grouped = enrichedProducts.reduce<Record<string, Product[]>>((acc, product) => {
+            // FIX: Using a generic argument with reduce in a .tsx file can cause parsing errors.
+            // Using a type assertion on the initial value is a safer way to type the accumulator.
+            const grouped = enrichedProducts.reduce((acc, product) => {
                 const categoryName = product.CategoryName || '미분류';
                 if (!acc[categoryName]) {
                     acc[categoryName] = [];
                 }
                 acc[categoryName].push(product);
                 return acc;
-            }, {});
+            }, {} as Record<string, Product[]>);
 
             setModalProducts(grouped);
 
@@ -146,46 +157,75 @@ const QuotePage: React.FC = () => {
             product: product,
             quantity: 1,
             appliedPrice: product.Price_Unit || 0,
-            total: 0, // will be calculated
+            total: 0, // 임시값, 재계산됨
         };
-        const updatedDays = days.map(d => {
-            if (d.id === activeDayId) {
-                return { ...d, items: [...d.items, newQuoteItem] };
-            }
-            return d;
+        setDays(currentDays => {
+            const intermediateDays = currentDays.map(d => {
+                if (d.id === activeDayId) {
+                    return { ...d, items: [...d.items, newQuoteItem] };
+                }
+                return d;
+            });
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            setGrandTotal(newGrandTotal);
+            return newDays;
         });
-        setDays(updatedDays);
+        
         setIsProductModalOpen(false);
         setActiveDayId(null);
     };
     
     const updateQuoteItem = (dayId: string, itemId: string, field: 'quantity' | 'appliedPrice', value: number) => {
-        const updatedDays = days.map(day => {
-            if (day.id === dayId) {
-                const updatedItems = day.items.map(item => {
-                    if (item.id === itemId) {
-                        return { ...item, [field]: value };
-                    }
-                    return item;
-                });
-                return { ...day, items: updatedItems };
-            }
-            return day;
+        setDays(currentDays => {
+            const intermediateDays = currentDays.map(day => {
+                if (day.id === dayId) {
+                    const updatedItems = day.items.map(item => {
+                        if (item.id === itemId) {
+                            return { ...item, [field]: value };
+                        }
+                        return item;
+                    });
+                    return { ...day, items: updatedItems };
+                }
+                return day;
+            });
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            setGrandTotal(newGrandTotal);
+            return newDays;
         });
-        setDays(updatedDays);
     };
 
     const removeQuoteItem = (dayId: string, itemId: string) => {
-        const updatedDays = days.map(day => {
-            if (day.id === dayId) {
-                return { ...day, items: day.items.filter(item => item.id !== itemId) };
-            }
-            return day;
+        setDays(currentDays => {
+            const intermediateDays = currentDays.map(day => {
+                if (day.id === dayId) {
+                    return { ...day, items: day.items.filter(item => item.id !== itemId) };
+                }
+                return day;
+            });
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            setGrandTotal(newGrandTotal);
+            return newDays;
         });
-        setDays(updatedDays);
     }
 
     const fullQuote: Quote = { info: quoteInfo, days, grandTotal };
+
+    const handleCopyToClipboard = () => {
+        navigator.clipboard.writeText(generateTextQuote(fullQuote))
+            .then(() => {
+                alert('견적 내용이 클립보드에 복사되었습니다.');
+            })
+            .catch(err => {
+                console.error('클립보드 복사 실패:', err);
+                alert('클립보드 복사에 실패했습니다.');
+            });
+    };
+
+    const handleExportCsv = () => {
+        exportCsvQuote(fullQuote);
+        alert('견적서가 CSV 파일로 다운로드됩니다.');
+    };
 
     return (
       <div className="space-y-8">
@@ -212,42 +252,93 @@ const QuotePage: React.FC = () => {
         <div className="p-6 bg-white rounded-lg shadow-md">
             <h2 className="text-xl font-bold mb-4">2. 일정</h2>
             <div className="space-y-6">
-                {days.map((day, index) => (
-                    <div key={day.id} className="border border-gray-200 p-4 rounded-md">
-                        <div className="flex justify-between items-center mb-3">
-                            <h3 className="font-bold text-lg">{index + 1}일차</h3>
-                            <Button size="sm" variant="danger" onClick={() => removeDay(day.id)} disabled={days.length <= 1}>일차 삭제</Button>
+                {days.map((day, index) => {
+                    // 각 일차의 상품들을 카테고리별로 그룹화합니다.
+                    // FIX: Untyped function calls may not accept type arguments. Changed to use type assertion on the initial value.
+                    const itemsByCategory = day.items.reduce((acc, item) => {
+                        const categoryName = item.product.CategoryName || '미분류';
+                        if (!acc[categoryName]) {
+                            acc[categoryName] = [];
+                        }
+                        acc[categoryName].push(item);
+                        return acc;
+                    }, {} as Record<string, QuoteItem[]>);
+
+                    // 카테고리 이름을 정렬하되, '미분류'는 맨 뒤로 보냅니다.
+                    const sortedCategories = Object.keys(itemsByCategory).sort((a, b) => {
+                        if (a === '미분류') return 1;
+                        if (b === '미분류') return -1;
+                        return a.localeCompare(b);
+                    });
+
+                    return (
+                        <div key={day.id} className="border border-gray-200 p-4 rounded-md">
+                            <div className="flex justify-between items-center mb-3">
+                                <h3 className="font-bold text-lg">{index + 1}일차</h3>
+                                <Button size="sm" variant="danger" onClick={() => removeDay(day.id)} disabled={days.length <= 1}>일차 삭제</Button>
+                            </div>
+                            
+                            <div className="space-y-4">
+                                {day.items.length === 0 ? (
+                                    <p className="text-sm text-gray-500 text-center py-4 bg-gray-50 rounded-md">추가된 상품이 없습니다.</p>
+                                ) : (
+                                    sortedCategories.map(categoryName => (
+                                        <div key={categoryName}>
+                                            <h4 className="font-semibold text-md text-blue-800 bg-blue-50 px-3 py-1.5 rounded-t-md">{categoryName}</h4>
+                                            <div className="space-y-2 border border-t-0 border-gray-200 p-2 rounded-b-md">
+                                                {itemsByCategory[categoryName].map(item => (
+                                                   <div key={item.id} className="grid grid-cols-12 gap-2 items-center p-2 even:bg-white odd:bg-gray-50 rounded">
+                                                       <div className="col-span-12 md:col-span-4 font-medium">{item.product.ProductName}</div>
+                                                       <div className="col-span-4 md:col-span-2 text-sm text-gray-600">{item.product.PricingType === 'PerPerson' ? '인당' : '단위당'}</div>
+                                                       {item.product.PricingType === 'PerUnit' ? (
+                                                        <>
+                                                           <div className="col-span-4 md:col-span-2">
+                                                             <Input label="수량" type="number" min="1" value={item.quantity} onChange={(e) => updateQuoteItem(day.id, item.id, 'quantity', parseInt(e.target.value) || 1)} className="py-1" />
+                                                           </div>
+                                                           <div className="col-span-4 md:col-span-2">
+                                                             <Input label="적용가" type="number" min="0" value={item.appliedPrice} onChange={(e) => updateQuoteItem(day.id, item.id, 'appliedPrice', parseFloat(e.target.value) || 0)} className="py-1" />
+                                                           </div>
+                                                        </>
+                                                       ) : <div className="col-span-8 md:col-span-4"></div>}
+                                                       <div className="col-span-10 md:col-span-3 font-semibold text-right">{formatCurrency(item.total)}</div>
+                                                       <div className="col-span-2 md:col-span-1 text-right">
+                                                         <button onClick={() => removeQuoteItem(day.id, item.id)} className="text-red-500 hover:text-red-700">
+                                                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
+                                                         </button>
+                                                       </div>
+                                                   </div>
+                                               ))}
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                            
+                            <div className="text-right font-bold mt-3">일차 합계: {formatCurrency(day.dayTotal)}</div>
+                            <div className="relative inline-block mt-4 group">
+                                <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    onClick={() => openProductSelector(day.id)}
+                                    disabled={!quoteInfo.cityId}
+                                >
+                                   + 상품 추가
+                                </Button>
+                                {!quoteInfo.cityId && (
+                                    <div
+                                        className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max whitespace-nowrap px-3 py-1.5 bg-gray-800 text-white text-xs font-semibold rounded-md shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-20"
+                                        role="tooltip"
+                                    >
+                                        여행지역을 선택해 주세요
+                                        <svg className="absolute text-gray-800 h-2 w-full left-0 top-full" x="0px" y="0px" viewBox="0 0 255 255" xmlSpace="preserve">
+                                            <polygon className="fill-current" points="0,0 127.5,127.5 255,0"/>
+                                        </svg>
+                                    </div>
+                                )}
+                            </div>
                         </div>
-                        <div className="space-y-2">
-                           {day.items.map(item => (
-                               <div key={item.id} className="grid grid-cols-12 gap-2 items-center p-2 bg-gray-50 rounded">
-                                   <div className="col-span-12 md:col-span-4 font-medium">{item.product.ProductName}</div>
-                                   <div className="col-span-4 md:col-span-2 text-sm text-gray-600">{item.product.PricingType === 'PerPerson' ? '인당' : '단위당'}</div>
-                                   {item.product.PricingType === 'PerUnit' ? (
-                                    <>
-                                       <div className="col-span-4 md:col-span-2">
-                                         <Input label="수량" type="number" min="1" value={item.quantity} onChange={(e) => updateQuoteItem(day.id, item.id, 'quantity', parseInt(e.target.value))} className="py-1" />
-                                       </div>
-                                       <div className="col-span-4 md:col-span-2">
-                                         <Input label="적용가" type="number" min="0" value={item.appliedPrice} onChange={(e) => updateQuoteItem(day.id, item.id, 'appliedPrice', parseFloat(e.target.value))} className="py-1" />
-                                       </div>
-                                    </>
-                                   ) : <div className="col-span-8 md:col-span-4"></div>}
-                                   <div className="col-span-10 md:col-span-3 font-semibold text-right">{formatCurrency(item.total)}</div>
-                                   <div className="col-span-2 md:col-span-1 text-right">
-                                     <button onClick={() => removeQuoteItem(day.id, item.id)} className="text-red-500 hover:text-red-700">
-                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 012 0v6a1 1 0 11-2 0V8z" clipRule="evenodd" /></svg>
-                                     </button>
-                                   </div>
-                               </div>
-                           ))}
-                        </div>
-                        <div className="text-right font-bold mt-3">일차 합계: {formatCurrency(day.dayTotal)}</div>
-                        <Button size="sm" variant="secondary" onClick={() => openProductSelector(day.id)} className="mt-4" disabled={!quoteInfo.cityId}>
-                           + 상품 추가
-                        </Button>
-                    </div>
-                ))}
+                    );
+                })}
             </div>
             <Button onClick={addDay} className="mt-6">+ 일차 추가</Button>
         </div>
@@ -260,8 +351,8 @@ const QuotePage: React.FC = () => {
                         <span className="text-2xl font-bold text-blue-600">{formatCurrency(grandTotal)}</span>
                     </div>
                     <div className="flex gap-2">
-                        <Button onClick={() => navigator.clipboard.writeText(generateTextQuote(fullQuote))}>텍스트 복사</Button>
-                        <Button onClick={() => exportCsvQuote(fullQuote)} variant="secondary">CSV로 내보내기</Button>
+                        <Button onClick={handleCopyToClipboard}>텍스트 복사</Button>
+                        <Button onClick={handleExportCsv} variant="secondary">CSV로 내보내기</Button>
                     </div>
                 </div>
             </div>
@@ -270,7 +361,10 @@ const QuotePage: React.FC = () => {
         {isProductModalOpen && (
             <ProductSelectorModal
                 isOpen={isProductModalOpen}
-                onClose={() => setIsProductModalOpen(false)}
+                onClose={() => {
+                    setIsProductModalOpen(false);
+                    setActiveDayId(null);
+                }}
                 onAddProduct={addProductToDay}
                 productsByCategory={modalProducts}
                 isLoading={isModalLoading}
@@ -292,14 +386,38 @@ interface ProductSelectorModalProps {
 
 const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onClose, onAddProduct, productsByCategory, isLoading, error }) => {
     
+    const [searchTerm, setSearchTerm] = useState('');
+
+    const filteredProductsByCategory = useMemo(() => {
+        if (!searchTerm.trim()) {
+            return productsByCategory;
+        }
+        const lowercasedFilter = searchTerm.toLowerCase().trim();
+        const filtered: Record<string, Product[]> = {};
+
+        for (const categoryName in productsByCategory) {
+            const products = productsByCategory[categoryName];
+            const filteredProducts = products.filter(product =>
+                product.ProductName.toLowerCase().includes(lowercasedFilter)
+            );
+
+            if (filteredProducts.length > 0) {
+                filtered[categoryName] = filteredProducts;
+            }
+        }
+        return filtered;
+    }, [productsByCategory, searchTerm]);
+
     const sortedCategories = useMemo(() => {
-        return Object.keys(productsByCategory)
+        return Object.keys(filteredProductsByCategory)
             .filter(name => name !== '미분류')
             .sort((a, b) => a.localeCompare(b));
-    }, [productsByCategory]);
+    }, [filteredProductsByCategory]);
 
-    const uncategorizedProducts = productsByCategory['미분류'] || [];
-    const hasProducts = !isLoading && Object.keys(productsByCategory).length > 0;
+    const uncategorizedProducts = filteredProductsByCategory['미분류'] || [];
+    
+    const hasOriginalProducts = Object.keys(productsByCategory).length > 0;
+    const hasFilteredProducts = Object.keys(filteredProductsByCategory).length > 0;
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} title="상품 선택">
@@ -307,51 +425,65 @@ const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onC
                 <p className="text-center text-gray-500">상품 로딩 중...</p>
             ) : error ? (
                 <p className="text-center text-red-500">{error}</p>
-            ) : !hasProducts ? (
+            ) : !hasOriginalProducts ? (
                 <p className="text-center text-gray-500">선택하신 도시에 등록된 상품이 없습니다.</p>
             ) : (
                 <div className="space-y-4">
-                    {sortedCategories.map(categoryName => (
-                        <div key={categoryName}>
-                            <h4 className="font-bold text-lg text-gray-700 mb-2">{categoryName}</h4>
-                            <ul className="space-y-2">
-                                {productsByCategory[categoryName].map(product => (
-                                    <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
-                                        <div>
-                                            <p className="font-medium">{product.ProductName}</p>
-                                            <p className="text-sm text-gray-500">
-                                                {product.PricingType === 'PerPerson'
-                                                    ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
-                                                    : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
-                                                }
-                                            </p>
-                                        </div>
-                                        <Button size="sm" onClick={() => onAddProduct(product)}>추가</Button>
-                                    </li>
-                                ))}
-                            </ul>
+                    <Input
+                        id="product-search"
+                        placeholder="상품명으로 검색..."
+                        value={searchTerm}
+                        onChange={e => setSearchTerm(e.target.value)}
+                        autoFocus
+                    />
+
+                    {hasFilteredProducts ? (
+                        <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+                            {sortedCategories.map(categoryName => (
+                                <div key={categoryName}>
+                                    <h4 className="font-bold text-lg text-gray-700 mb-2 sticky top-0 bg-white py-1">{categoryName}</h4>
+                                    <ul className="space-y-2">
+                                        {filteredProductsByCategory[categoryName].map(product => (
+                                            <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
+                                                <div>
+                                                    <p className="font-medium">{product.ProductName}</p>
+                                                    <p className="text-sm text-gray-500">
+                                                        {product.PricingType === 'PerPerson'
+                                                            ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
+                                                            : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
+                                                        }
+                                                    </p>
+                                                </div>
+                                                <Button size="sm" onClick={() => onAddProduct(product)}>추가</Button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ))}
+                            {uncategorizedProducts.length > 0 && (
+                                <div>
+                                    <h4 className="font-bold text-lg text-gray-700 mb-2 sticky top-0 bg-white py-1">미분류</h4>
+                                    <ul className="space-y-2">
+                                        {uncategorizedProducts.map(product => (
+                                            <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
+                                                <div>
+                                                    <p className="font-medium">{product.ProductName}</p>
+                                                    <p className="text-sm text-gray-500">
+                                                        {product.PricingType === 'PerPerson'
+                                                            ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
+                                                            : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
+                                                        }
+                                                    </p>
+                                                </div>
+                                                <Button size="sm" onClick={() => onAddProduct(product)}>추가</Button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
                         </div>
-                    ))}
-                    {uncategorizedProducts.length > 0 && (
-                         <div>
-                            <h4 className="font-bold text-lg text-gray-700 mb-2">미분류</h4>
-                            <ul className="space-y-2">
-                                {uncategorizedProducts.map(product => (
-                                    <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
-                                        <div>
-                                            <p className="font-medium">{product.ProductName}</p>
-                                            <p className="text-sm text-gray-500">
-                                                {product.PricingType === 'PerPerson'
-                                                    ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
-                                                    : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
-                                                }
-                                            </p>
-                                        </div>
-                                        <Button size="sm" onClick={() => onAddProduct(product)}>추가</Button>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
+                    ) : (
+                         <p className="text-center text-gray-500 pt-4">검색 결과가 없습니다.</p>
                     )}
                 </div>
             )}
