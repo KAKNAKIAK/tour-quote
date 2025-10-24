@@ -417,6 +417,7 @@ const ManageCategories: React.FC<ManageProps> = ({ requestDelete }) => {
 };
 
 // Component to Manage Products
+// Force rebuild to apply latest changes
 const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
     const { data: products } = useFirestoreCollection<Product>('Products');
     const { data: cities } = useFirestoreCollection<City>('Cities');
