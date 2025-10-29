@@ -13,31 +13,6 @@ const formatCurrency = (amount: number): string => {
     return `₩${Math.round(amount).toLocaleString('ko-KR')}`;
 }
 
-// 순수 계산 함수: 현재의 days 배열과 pax 정보를 받아 모든 합계를 다시 계산한 새로운 quote 객체를 반환합니다.
-const recalculateQuote = (currentDays: QuoteDay[], pax: QuoteInfo['pax']): { newDays: QuoteDay[], newGrandTotal: number } => {
-    let grandTotal = 0;
-    const newDays = currentDays.map(day => {
-        let dayTotal = 0;
-        const newItems = day.items.map(item => {
-            let total = 0;
-            if (item.product.PricingType === 'PerPerson') {
-                const adultPrice = item.product.Price_Adult || 0;
-                const childPrice = item.product.Price_Child || 0;
-                const infantPrice = item.product.Price_Infant || 0;
-                total = (pax.adults * adultPrice) + (pax.children * childPrice) + (pax.infants * infantPrice);
-            } else { // PerUnit
-                total = item.quantity * item.appliedPrice;
-            }
-            dayTotal += total;
-            return { ...item, total };
-        });
-        grandTotal += dayTotal;
-        return { ...day, items: newItems, dayTotal };
-    });
-    return { newDays, newGrandTotal: grandTotal };
-};
-
-
 const QuotePage: React.FC = () => {
     const { data: countries } = useFirestoreCollection<Country>('Countries');
     const { data: allCities } = useFirestoreCollection<City>('Cities');
@@ -64,17 +39,25 @@ const QuotePage: React.FC = () => {
         return allCities.filter(city => city.CountryRef.id === quoteInfo.countryId);
     }, [quoteInfo.countryId, allCities]);
 
+    const recalculateQuote = useCallback((currentDays: QuoteDay[]): { newDays: QuoteDay[], newGrandTotal: number } => {
+        let grandTotal = 0;
+        const newDays = currentDays.map(day => {
+            let dayTotal = 0;
+            const newItems = day.items.map(item => {
+                const total = item.quantity * item.appliedPrice;
+                dayTotal += total;
+                return { ...item, total };
+            });
+            grandTotal += dayTotal;
+            return { ...day, items: newItems, dayTotal };
+        });
+        return { newDays, newGrandTotal: grandTotal };
+    }, []);
+
     const handleInfoChange = (field: keyof QuoteInfo, value: any) => {
         if (field === 'pax') {
             const newPax = { ...quoteInfo.pax, ...value };
             setQuoteInfo(prev => ({ ...prev, pax: newPax }));
-            
-            // 인원수 변경 시, 최신 days 상태를 기반으로 즉시 재계산
-            setDays(currentDays => {
-                const { newDays, newGrandTotal } = recalculateQuote(currentDays, newPax);
-                setGrandTotal(newGrandTotal);
-                return newDays;
-            });
         } else {
             setQuoteInfo(prev => ({ ...prev, [field]: value }));
         }
@@ -92,7 +75,7 @@ const QuotePage: React.FC = () => {
     const removeDay = (id: string) => {
         setDays(currentDays => {
             const intermediateDays = currentDays.filter(d => d.id !== id);
-            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays);
             setGrandTotal(newGrandTotal);
             return newDays;
         });
@@ -130,8 +113,6 @@ const QuotePage: React.FC = () => {
                 };
             });
             
-            // FIX: Using a generic argument with reduce in a .tsx file can cause parsing errors.
-            // Using a type assertion on the initial value is a safer way to type the accumulator.
             const grouped = enrichedProducts.reduce((acc, product) => {
                 const categoryName = product.CategoryName || '미분류';
                 if (!acc[categoryName]) {
@@ -152,13 +133,30 @@ const QuotePage: React.FC = () => {
     };
     
     const addProductToDay = (product: Product) => {
+        let initialQuantity = 1;
+        let initialAppliedPrice = 0;
+    
+        if (product.PricingType === 'PerPerson') {
+            const totalPax = quoteInfo.pax.adults + quoteInfo.pax.children + quoteInfo.pax.infants;
+            initialQuantity = totalPax > 0 ? totalPax : 1;
+            const totalPrice =
+                (quoteInfo.pax.adults * (product.Price_Adult || 0)) +
+                (quoteInfo.pax.children * (product.Price_Child || 0)) +
+                (quoteInfo.pax.infants * (product.Price_Infant || 0));
+            initialAppliedPrice = totalPax > 0 ? Math.round(totalPrice / totalPax) : 0;
+        } else { // PerUnit
+            initialQuantity = 1;
+            initialAppliedPrice = product.Price_Unit || 0;
+        }
+
         const newQuoteItem: QuoteItem = {
             id: crypto.randomUUID(),
             product: product,
-            quantity: 1,
-            appliedPrice: product.Price_Unit || 0,
-            total: 0, // 임시값, 재계산됨
+            quantity: initialQuantity,
+            appliedPrice: initialAppliedPrice,
+            total: 0, // Will be recalculated
         };
+        
         setDays(currentDays => {
             const intermediateDays = currentDays.map(d => {
                 if (d.id === activeDayId) {
@@ -166,7 +164,7 @@ const QuotePage: React.FC = () => {
                 }
                 return d;
             });
-            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays);
             setGrandTotal(newGrandTotal);
             return newDays;
         });
@@ -189,7 +187,7 @@ const QuotePage: React.FC = () => {
                 }
                 return day;
             });
-            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays);
             setGrandTotal(newGrandTotal);
             return newDays;
         });
@@ -203,7 +201,7 @@ const QuotePage: React.FC = () => {
                 }
                 return day;
             });
-            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays, quoteInfo.pax);
+            const { newDays, newGrandTotal } = recalculateQuote(intermediateDays);
             setGrandTotal(newGrandTotal);
             return newDays;
         });
@@ -253,8 +251,6 @@ const QuotePage: React.FC = () => {
             <h2 className="text-xl font-bold mb-4">2. 일정</h2>
             <div className="space-y-6">
                 {days.map((day, index) => {
-                    // 각 일차의 상품들을 카테고리별로 그룹화합니다.
-                    // FIX: Untyped function calls may not accept type arguments. Changed to use type assertion on the initial value.
                     const itemsByCategory = day.items.reduce((acc, item) => {
                         const categoryName = item.product.CategoryName || '미분류';
                         if (!acc[categoryName]) {
@@ -264,7 +260,6 @@ const QuotePage: React.FC = () => {
                         return acc;
                     }, {} as Record<string, QuoteItem[]>);
 
-                    // 카테고리 이름을 정렬하되, '미분류'는 맨 뒤로 보냅니다.
                     const sortedCategories = Object.keys(itemsByCategory).sort((a, b) => {
                         if (a === '미분류') return 1;
                         if (b === '미분류') return -1;
@@ -288,10 +283,17 @@ const QuotePage: React.FC = () => {
                                             <div className="space-y-2 border border-t-0 border-gray-200 p-2 rounded-b-md">
                                                 {itemsByCategory[categoryName].map(item => (
                                                    <div key={item.id} className="grid grid-cols-12 gap-2 items-center p-2 even:bg-white odd:bg-gray-50 rounded">
-                                                       <div className="col-span-12 md:col-span-4 font-medium">{item.product.ProductName}</div>
+                                                       <div className="col-span-12 md:col-span-4 font-medium">
+                                                            {item.product.ProductURL ? (
+                                                                <a href={item.product.ProductURL} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                                                                    {item.product.ProductName}
+                                                                </a>
+                                                            ) : (
+                                                                item.product.ProductName
+                                                            )}
+                                                       </div>
                                                        <div className="col-span-4 md:col-span-2 text-sm text-gray-600">{item.product.PricingType === 'PerPerson' ? '인당' : '단위당'}</div>
-                                                       {item.product.PricingType === 'PerUnit' ? (
-                                                        <>
+                                                       <>
                                                            <div className="col-span-4 md:col-span-2">
                                                              <Input label="수량" type="number" min="1" value={item.quantity} onChange={(e) => updateQuoteItem(day.id, item.id, 'quantity', parseInt(e.target.value) || 1)} className="py-1" />
                                                            </div>
@@ -299,7 +301,6 @@ const QuotePage: React.FC = () => {
                                                              <Input label="적용가" type="number" min="0" value={item.appliedPrice} onChange={(e) => updateQuoteItem(day.id, item.id, 'appliedPrice', parseFloat(e.target.value) || 0)} className="py-1" />
                                                            </div>
                                                         </>
-                                                       ) : <div className="col-span-8 md:col-span-4"></div>}
                                                        <div className="col-span-10 md:col-span-3 font-semibold text-right">{formatCurrency(item.total)}</div>
                                                        <div className="col-span-2 md:col-span-1 text-right">
                                                          <button onClick={() => removeQuoteItem(day.id, item.id)} className="text-red-500 hover:text-red-700">
@@ -446,8 +447,17 @@ const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onC
                                         {filteredProductsByCategory[categoryName].map(product => (
                                             <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
                                                 <div>
-                                                    <p className="font-medium">{product.ProductName}</p>
-                                                    <p className="text-sm text-gray-500">
+                                                    {product.ProductURL ? (
+                                                        <a href={product.ProductURL} target="_blank" rel="noopener noreferrer" className="font-medium text-blue-600 hover:underline">
+                                                            {product.ProductName}
+                                                        </a>
+                                                    ) : (
+                                                        <p className="font-medium">{product.ProductName}</p>
+                                                    )}
+                                                    {product.ProductDescription && (
+                                                      <p className="text-xs text-gray-600 mt-1">{product.ProductDescription}</p>
+                                                    )}
+                                                    <p className="text-sm text-gray-500 mt-1">
                                                         {product.PricingType === 'PerPerson'
                                                             ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
                                                             : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`
@@ -467,8 +477,17 @@ const ProductSelectorModal: React.FC<ProductSelectorModalProps> = ({ isOpen, onC
                                         {uncategorizedProducts.map(product => (
                                             <li key={product.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-md hover:bg-blue-50 transition-colors">
                                                 <div>
-                                                    <p className="font-medium">{product.ProductName}</p>
-                                                    <p className="text-sm text-gray-500">
+                                                    {product.ProductURL ? (
+                                                        <a href={product.ProductURL} target="_blank" rel="noopener noreferrer" className="font-medium text-blue-600 hover:underline">
+                                                            {product.ProductName}
+                                                        </a>
+                                                    ) : (
+                                                        <p className="font-medium">{product.ProductName}</p>
+                                                    )}
+                                                     {product.ProductDescription && (
+                                                      <p className="text-xs text-gray-600 mt-1">{product.ProductDescription}</p>
+                                                    )}
+                                                    <p className="text-sm text-gray-500 mt-1">
                                                         {product.PricingType === 'PerPerson'
                                                             ? `성인: ${formatCurrency(product.Price_Adult || 0)} / 아동: ${formatCurrency(product.Price_Child || 0)} / 유아: ${formatCurrency(product.Price_Infant || 0)}`
                                                             : `단위당 가격: ${formatCurrency(product.Price_Unit || 0)}`

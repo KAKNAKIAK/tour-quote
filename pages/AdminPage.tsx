@@ -417,7 +417,6 @@ const ManageCategories: React.FC<ManageProps> = ({ requestDelete }) => {
 };
 
 // Component to Manage Products
-// Force rebuild to apply latest changes
 const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
     const { data: products } = useFirestoreCollection<Product>('Products');
     const { data: cities } = useFirestoreCollection<City>('Cities');
@@ -427,6 +426,8 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
     const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 
     const [productName, setProductName] = useState('');
+    const [productDescription, setProductDescription] = useState('');
+    const [productURL, setProductURL] = useState('');
     const [cityId, setCityId] = useState('');
     const [categoryId, setCategoryId] = useState('');
     const [pricingType, setPricingType] = useState<PricingType>('PerPerson');
@@ -463,6 +464,8 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
 
     const resetForm = () => {
         setProductName('');
+        setProductDescription('');
+        setProductURL('');
         setCityId('');
         setCategoryId('');
         setPricingType('PerPerson');
@@ -483,6 +486,8 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
         resetForm();
         setEditingProduct(product);
         setProductName(product.ProductName);
+        setProductDescription(product.ProductDescription || '');
+        setProductURL(product.ProductURL || '');
         setCityId(product.CityRef.id);
         setCategoryId(product.CategoryRef.id);
         setPricingType(product.PricingType);
@@ -498,8 +503,10 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
         setIsSubmitting(true);
         setSubmitError(null);
         try {
-            const payload: Omit<Product, 'id'> = {
+            const payload: any = {
                 ProductName: productName,
+                ProductDescription: productDescription,
+                ProductURL: productURL,
                 CityRef: doc(db, 'Cities', cityId),
                 CategoryRef: doc(db, 'Categories', categoryId),
                 PricingType: pricingType,
@@ -545,10 +552,37 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
 
     return (
       <div>
-        <Button onClick={openAddModal} disabled={deletingId !== null}>새 상품 추가</Button>
+        <div className="flex justify-between items-start mb-4">
+          <Button onClick={openAddModal} disabled={deletingId !== null}>새 상품 추가</Button>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select label="도시 필터" id="city-filter" value={selectedCityId} onChange={e => setSelectedCityId(e.target.value)}>
+                  <option value="">전체 도시</option>
+                  {cities.sort((a,b) => a.CityName.localeCompare(b.CityName)).map(c => <option key={c.id} value={c.id}>{c.CityName}</option>)}
+              </Select>
+              <Select label="카테고리 필터" id="category-filter" value={selectedCategoryId} onChange={e => setSelectedCategoryId(e.target.value)}>
+                  <option value="">전체 카테고리</option>
+                  {categories.sort((a,b) => a.CategoryName.localeCompare(b.CategoryName)).map(c => <option key={c.id} value={c.id}>{c.CategoryName}</option>)}
+              </Select>
+          </div>
+        </div>
         <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingProduct ? '상품 수정' : '상품 추가'}>
             <form onSubmit={handleSubmit} className="space-y-4">
                 <Input label="상품명" id="product-name" value={productName} onChange={e => setProductName(e.target.value)} required />
+                <Input
+                    label="상품 설명"
+                    id="product-description"
+                    placeholder="관리자 패널의 상품명 툴팁과 견적 생성기에 표시됩니다."
+                    value={productDescription}
+                    onChange={e => setProductDescription(e.target.value)}
+                />
+                <Input
+                    label="관련 URL"
+                    id="product-url"
+                    type="url"
+                    placeholder="https://example.com/tour-details"
+                    value={productURL}
+                    onChange={e => setProductURL(e.target.value)}
+                />
                 <div className="grid grid-cols-2 gap-4">
                     <Select label="도시" id="product-city" value={cityId} onChange={e => setCityId(e.target.value)} required>
                         <option value="">도시 선택</option>
@@ -582,18 +616,7 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
             </form>
         </Modal>
 
-        <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4 border-b pb-4 mb-4">
-            <Select label="도시 필터" id="city-filter" value={selectedCityId} onChange={e => setSelectedCityId(e.target.value)}>
-                <option value="">전체 도시</option>
-                {cities.sort((a,b) => a.CityName.localeCompare(b.CityName)).map(c => <option key={c.id} value={c.id}>{c.CityName}</option>)}
-            </Select>
-            <Select label="카테고리 필터" id="category-filter" value={selectedCategoryId} onChange={e => setSelectedCategoryId(e.target.value)}>
-                <option value="">전체 카테고리</option>
-                {categories.sort((a,b) => a.CategoryName.localeCompare(b.CategoryName)).map(c => <option key={c.id} value={c.id}>{c.CategoryName}</option>)}
-            </Select>
-        </div>
-
-        <div className="flow-root">
+        <div className="flow-root mt-6">
             <div className="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
                 <div className="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
                     <table className="min-w-full divide-y divide-gray-300">
@@ -612,7 +635,23 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                             const isCurrentDeleting = deletingId === p.id;
                             return (
                                 <tr key={p.id}>
-                                    <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">{p.ProductName}</td>
+                                    <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">
+                                       <div className="group relative">
+                                            {p.ProductName}
+                                            {(p.ProductDescription || p.ProductURL) && (
+                                            <div
+                                                className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max max-w-xs whitespace-normal p-2 bg-gray-800 text-white text-xs font-normal rounded-md shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-20"
+                                                role="tooltip"
+                                            >
+                                                {p.ProductDescription && <p>{p.ProductDescription}</p>}
+                                                {p.ProductURL && <p className="mt-1 text-blue-300 break-all">{p.ProductURL}</p>}
+                                                <svg className="absolute text-gray-800 h-2 w-full left-0 top-full" x="0px" y="0px" viewBox="0 0 255 255" xmlSpace="preserve">
+                                                    <polygon className="fill-current" points="0,0 127.5,127.5 255,0"/>
+                                                </svg>
+                                            </div>
+                                            )}
+                                        </div>
+                                    </td>
                                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.cityName}</td>
                                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{productDetailsMap[p.id]?.categoryName}</td>
                                     <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">{p.PricingType === 'PerPerson' ? '인당' : '단위당'}</td>

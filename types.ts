@@ -1,4 +1,3 @@
-
 import { DocumentReference, DocumentData } from 'firebase/firestore';
 
 export interface FirestoreDocument {
@@ -22,6 +21,8 @@ export type PricingType = "PerPerson" | "PerUnit";
 
 export interface Product extends FirestoreDocument {
   ProductName: string;
+  ProductDescription?: string;
+  ProductURL?: string;
   CityRef: DocumentReference<DocumentData>;
   CategoryRef: DocumentReference<DocumentData>;
   PricingType: PricingType;
@@ -37,8 +38,8 @@ export interface Product extends FirestoreDocument {
 export interface QuoteItem {
   id: string; // Unique ID for the item in the quote
   product: Product;
-  quantity: number; // For PerUnit items
-  appliedPrice: number; // For PerUnit items, can be modified
+  quantity: number;
+  appliedPrice: number;
   total: number;
 }
 
