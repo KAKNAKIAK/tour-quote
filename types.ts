@@ -1,4 +1,4 @@
-import { DocumentReference, DocumentData } from 'firebase/firestore';
+import { DocumentReference, DocumentData, Timestamp } from 'firebase/firestore';
 
 export interface FirestoreDocument {
   id: string;
@@ -30,6 +30,7 @@ export interface Product extends FirestoreDocument {
   Price_Child?: number;
   Price_Infant?: number;
   Price_Unit?: number;
+  LastModified?: Timestamp;
   // For display purposes after fetching related data
   CityName?: string;
   CategoryName?: string;

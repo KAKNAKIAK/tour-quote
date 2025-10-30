@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { db } from '../firebase';
-import { collection, doc, addDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch } from 'firebase/firestore';
+import { collection, doc, addDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { useFirestoreCollection } from '../hooks/useFirestoreCollection';
 import { Country, City, Category, Product, PricingType } from '../types';
 import Button from '../components/ui/Button';
@@ -510,6 +510,7 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                 CityRef: doc(db, 'Cities', cityId),
                 CategoryRef: doc(db, 'Categories', categoryId),
                 PricingType: pricingType,
+                LastModified: serverTimestamp(),
             };
 
             if(pricingType === 'PerPerson') {
@@ -627,6 +628,7 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                             <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">카테고리</th>
                             <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">가격 유형</th>
                             <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">가격</th>
+                            <th scope="col" className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">최종 수정일</th>
                             <th scope="col" className="relative py-3.5 pl-3 pr-4 sm:pr-0"><span className="sr-only">수정</span></th>
                         </tr>
                         </thead>
@@ -665,6 +667,11 @@ const ManageProducts: React.FC<ManageProps> = ({ requestDelete }) => {
                                         ) : (
                                             formatCurrency(p.Price_Unit || 0)
                                         )}
+                                    </td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                                        {p.LastModified
+                                            ? p.LastModified.toDate().toLocaleDateString('sv-SE')
+                                            : 'N/A'}
                                     </td>
                                     <td className="relative whitespace-nowrap py-4 pl-3 pr-4 text-right text-sm font-medium sm:pr-0">
                                         <div className="space-x-2">
